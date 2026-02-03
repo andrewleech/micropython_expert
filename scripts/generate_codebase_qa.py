@@ -22,11 +22,15 @@ Usage:
 import json
 import subprocess
 import re
+import sys
 import time
 from argparse import ArgumentParser
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
+
+# Unbuffered output for real-time logging
+sys.stdout.reconfigure(line_buffering=True)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "data" / "training"
@@ -128,10 +132,10 @@ CATEGORIES = {
 SYSTEM_PROMPT = """You are an expert MicroPython developer helping users understand the codebase. Provide clear, accurate explanations based on the source code."""
 
 
-def call_claude(prompt: str, max_tokens: int = 4096) -> str:
+def call_claude(prompt: str) -> str:
     """Call Claude CLI and return response."""
     result = subprocess.run(
-        ["claude", "-p", prompt, "--max-tokens", str(max_tokens)],
+        ["claude", "-p", prompt, "--model", "haiku"],
         capture_output=True,
         text=True,
         timeout=180,

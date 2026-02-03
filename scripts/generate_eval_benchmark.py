@@ -43,10 +43,10 @@ PORTS = [
 CORE_DIRS = ["py", "extmod", "shared", "lib"]
 
 
-def call_claude(prompt: str, max_tokens: int = 4096) -> str:
+def call_claude(prompt: str) -> str:
     """Call Claude CLI and return response."""
     result = subprocess.run(
-        ["claude", "-p", prompt, "--max-tokens", str(max_tokens)],
+        ["claude", "-p", prompt, "--model", "haiku"],
         capture_output=True,
         text=True,
         timeout=120,
