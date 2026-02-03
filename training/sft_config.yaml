@@ -1,0 +1,52 @@
+# Supervised Fine-Tuning Configuration for MicroPython Expert Model
+# Target: RTX 8000 (48GB VRAM)
+
+# Model
+model_name: Qwen/Qwen3-Coder-8B-Instruct
+output_dir: ./models/micropython-expert-8b
+
+# Training hyperparameters
+num_train_epochs: 3
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 8    # Effective batch size: 32
+learning_rate: 2.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+weight_decay: 0.01
+max_grad_norm: 1.0
+
+# Sequence length
+max_seq_length: 4096              # Covers most reviews with context
+packing: false                    # Don't pack sequences (preserves example boundaries)
+
+# Memory optimization for 48GB VRAM
+gradient_checkpointing: true
+bf16: true
+tf32: true                        # Enable TF32 for faster matmuls on Ampere+
+
+# Checkpointing and saving
+save_strategy: steps
+save_steps: 500
+save_total_limit: 3
+evaluation_strategy: steps
+eval_steps: 500
+logging_steps: 10
+report_to: tensorboard
+
+# Resume capability
+resume_from_checkpoint: true      # Auto-resume from latest checkpoint
+
+# Data loading
+dataloader_num_workers: 4
+dataloader_pin_memory: true
+
+# Dataset weights (applied during merging)
+# These are reference values - actual weighting done in data preparation
+dataset_weights:
+  reviews_sft: 1.0
+  wiki_qa: 1.2
+  codebase_qa: 1.5
+  app_dev_qa: 1.0
+
+# Validation
+per_device_eval_batch_size: 8

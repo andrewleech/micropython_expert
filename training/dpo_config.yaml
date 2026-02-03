@@ -1,0 +1,39 @@
+# Direct Preference Optimization Configuration
+# Runs after SFT to align model with review quality preferences
+
+# Model - use the SFT checkpoint
+model_name: ./models/micropython-expert-8b
+output_dir: ./models/micropython-expert-8b-dpo
+
+# DPO hyperparameters
+beta: 0.1                         # KL penalty coefficient
+loss_type: sigmoid                # Standard DPO loss
+
+# Training
+num_train_epochs: 1
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 8    # Effective batch: 16
+learning_rate: 5.0e-7             # Lower LR for DPO
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+weight_decay: 0.01
+max_grad_norm: 1.0
+
+# Sequence length
+max_length: 4096
+max_prompt_length: 2048
+
+# Memory optimization
+gradient_checkpointing: true
+bf16: true
+tf32: true
+
+# Checkpointing
+save_strategy: steps
+save_steps: 200
+save_total_limit: 2
+logging_steps: 10
+report_to: tensorboard
+
+# Resume
+resume_from_checkpoint: true
