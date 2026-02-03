@@ -22,9 +22,13 @@ import json
 import subprocess
 import sqlite3
 import re
+import sys
 from argparse import ArgumentParser
 from pathlib import Path
 from datetime import datetime
+
+# Unbuffered output for real-time logging
+sys.stdout.reconfigure(line_buffering=True)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DB_PATH = PROJECT_ROOT / "data" / "raw" / "dpgeorge_reviews.db"

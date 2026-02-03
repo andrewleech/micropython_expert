@@ -20,10 +20,14 @@ Usage:
 import json
 import subprocess
 import re
+import sys
 import time
 from argparse import ArgumentParser
 from pathlib import Path
 from datetime import datetime
+
+# Unbuffered output for real-time logging
+sys.stdout.reconfigure(line_buffering=True)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "data" / "training"
