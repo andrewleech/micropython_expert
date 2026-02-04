@@ -1,0 +1,8 @@
+{
+  "generated_at": "2026-02-04T08:10:04.029018",
+  "benchmarks": {
+    "factual_qa": true,
+    "port_knowledge": true,
+    "style_benchmark": true
+  }
+}

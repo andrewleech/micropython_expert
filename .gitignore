@@ -11,15 +11,10 @@ env/
 dist/
 build/
 
-# Data (generated, large)
-data/raw/*.db
+# Data (intermediate/generated)
 data/lance/
-data/training/*.jsonl
-data/eval/*.jsonl
-data/wiki/
 data/codebase/
 data/*_checkpoint.json
-*.jsonl
 
 # Training outputs
 models/

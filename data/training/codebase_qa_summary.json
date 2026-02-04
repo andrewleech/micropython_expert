@@ -1,0 +1,12 @@
+{
+  "generated_at": "2026-02-04T13:54:15.796368",
+  "total_pairs": 3936,
+  "files_processed": 412,
+  "category_counts": {
+    "py_core": 407,
+    "extmod": 294,
+    "ports": 3059,
+    "build_system": 88,
+    "docs_develop": 88
+  }
+}
