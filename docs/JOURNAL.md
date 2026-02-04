@@ -215,3 +215,199 @@ micropython-expert/
 **Phase: Data preparation COMPLETE - Ready for training**
 
 ---
+
+## 2026-02-04: Remote Deployment & Model Selection
+
+### Deployment to piai Server
+
+Transferred project to remote RTX 8000 server:
+```bash
+rsync -avz --progress \
+  --exclude 'venv/' --exclude '.git/' --exclude 'micropython/' \
+  --exclude '__pycache__/' --exclude '*.pyc' --exclude 'logs/*.log' \
+  --exclude 'models/' \
+  /home/anl/mpy/micropython-expert/ piai:micropython-expert/
+```
+
+- Transfer successful: 142MB (26.9MB compressed)
+- Training data verified: 50,669 total lines across 6 JSONL files
+- Environment setup: venv created, dependencies installed
+- flash-attn installed (required CUDA toolkit installation)
+- HuggingFace authentication configured
+
+### Model Investigation
+
+Original plan specified `Qwen/Qwen3-Coder-8B-Instruct` but this model doesn't exist.
+
+**Models evaluated:**
+
+| Model | Params | Architecture | Strengths |
+|-------|--------|--------------|-----------|
+| Qwen2.5-Coder-7B-Instruct | 7B dense | Dense | HumanEval 88.4%, proven fine-tuning |
+| Qwen3-Coder-Next | 80B/3B active | MoE (512 experts) | SWE-Bench 70.6%, agent-focused |
+| Qwen3-8B | 8B dense | Dense | General purpose, not code-specific |
+| Qwen3-Coder-30B-A3B-Instruct | 30B/3B active | MoE | Code-specific MoE |
+
+**Benchmark comparison:**
+
+*Qwen2.5-Coder-7B-Instruct:*
+- HumanEval: 88.4% (outperforms DS-Coder-33B)
+- Dense architecture, well-documented fine-tuning process
+- 128K context
+
+*Qwen3-Coder-Next:*
+- SWE-Bench Verified: 70.6% (beats DeepSeek-V3.2 at 671B params)
+- SWE-Bench Pro: 44.3%
+- Aider: 66.2%
+- 256K context, designed for coding agents
+- MoE architecture complicates fine-tuning
+
+**Decision:** Start with Qwen2.5-Coder-7B-Instruct for straightforward first trial. Plan to fine-tune Qwen3-Coder-Next as a follow-up experiment for comparison.
+
+### Training Plan
+
+**Phase 1: Qwen2.5-Coder-7B-Instruct (current)**
+1. SFT training (~8-12 hours)
+2. DPO alignment (~1-2 hours)
+3. Evaluation against benchmarks
+
+**Phase 2: Qwen3-Coder-Next (future)**
+- Requires MoE-aware fine-tuning approach
+- May need adjusted hyperparameters for sparse architecture
+- Compare results with Phase 1 model
+
+### Evaluation Plan
+
+Once training completes, evaluate by:
+1. **PR Review Quality:** Review a range of open MicroPython PRs
+2. **MicroPython Knowledge Q&A:** Answer domain-specific questions
+3. **Comparison Matrix:**
+   - Fine-tuned Qwen2.5-Coder-7B
+   - Fine-tuned Qwen3-Coder-Next (when complete)
+   - Claude Opus (baseline)
+   - Claude Sonnet (baseline)
+   - Claude Opus + dpgeorge review RAG
+   - Claude Sonnet + dpgeorge review RAG
+
+This will quantify the value of fine-tuning vs RAG augmentation.
+
+### Next Steps
+1. ~~Update config to use Qwen2.5-Coder-7B-Instruct~~ ✓
+2. ~~Start SFT training in tmux session~~ ✓
+3. Monitor training progress (ongoing)
+
+---
+
+## 2026-02-04: Training Started (Late Evening)
+
+### Configuration Issues Resolved
+
+Multiple issues encountered during training startup:
+
+1. **TRL API change**: `max_seq_length` → `max_length` in SFTConfig
+2. **TF32 not supported**: RTX 8000 is Turing (not Ampere+), disabled TF32
+3. **Flash Attention not supported**: Turing doesn't support FA2, switched to SDPA
+4. **Multi-GPU interference**: System has RTX 8000 (46GB) + Quadro K1200 (4GB), set `CUDA_VISIBLE_DEVICES=0`
+5. **Docker container conflict**: `qwen-text-to-image` container was using 27GB, stopped it
+6. **Memory constraints**: Full fine-tuning requires ~56GB (model + gradients + optimizer states), switched to QLoRA
+
+### Final Working Configuration
+
+```yaml
+model_name: Qwen/Qwen2.5-Coder-7B-Instruct
+use_qlora: true
+lora_r: 64
+lora_alpha: 128
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 8
+max_seq_length: 2048
+optim: adamw_8bit
+```
+
+QLoRA uses:
+- 4-bit quantized base model (~4GB instead of 14GB)
+- LoRA adapters (r=64, ~100M trainable params)
+- 8-bit Adam optimizer
+
+Memory usage: ~30GB of 46GB available
+
+### Training Progress
+
+- Started: 2026-02-04 23:15
+- Total steps: 2220 (3 epochs × 740 steps)
+- Current speed: ~157 seconds/step
+- Estimated total time: ~97 hours
+- GPU utilization: 100%
+
+Note: Speed is limited by:
+- No Flash Attention (Turing architecture)
+- SDPA fallback is slower
+- 4-bit quantization has dequantization overhead
+
+### Trainable Parameters
+
+Using QLoRA with r=64 targeting all linear layers:
+- q_proj, k_proj, v_proj, o_proj (attention)
+- gate_proj, up_proj, down_proj (MLP)
+
+### Status
+**Phase: SFT Training IN PROGRESS**
+
+---
+
+## 2026-02-05: Inference Planning & Conversion Scripts
+
+### Training Progress Update
+
+After 8 hours of monitoring:
+- Step 177/2220 (8% complete)
+- Speed: ~138-150 sec/step
+- ETA: ~95 hours remaining (~4 days total)
+- Training stable, no errors
+
+### Local Inference Resource Analysis
+
+Target deployment machine: Windows laptop with AMD Radeon 860M (8GB dedicated VRAM + 28GB shared).
+
+**Memory requirements for Qwen2.5-Coder-7B:**
+
+| Quantization | VRAM/RAM | Quality | Speed |
+|--------------|----------|---------|-------|
+| bf16/fp16 | ~14GB | 100% | Fast |
+| 8-bit | ~8GB | ~99% | Good |
+| 4-bit GGUF | ~4-5GB | ~97% | Good |
+| Q4_K_M | ~4.5GB | ~95-97% | 15-30 tok/s |
+
+**Recommendation:** Q4_K_M or Q5_K_M GGUF format
+- Fits comfortably in 8GB dedicated VRAM
+- Minimal quality loss for code review tasks
+- Good inference speed
+
+### AMD GPU Inference Strategy
+
+AMD GPUs don't support ROCm in WSL2, so Windows-native inference is required:
+
+1. **Ollama for Windows** - Easiest, good AMD support via ROCm/Vulkan
+2. **LM Studio** - Nice GUI, Vulkan backend
+3. **koboldcpp** - OpenAI-compatible API
+
+Architecture:
+```
+Windows: Ollama/LM Studio (GPU) → localhost:11434
+    ↑
+WSL2: Scripts/Claude Code → HTTP API calls
+```
+
+### Post-Training Conversion Pipeline
+
+Scripts created:
+- `scripts/merge_lora.py` - Merge LoRA adapters into base model
+- `scripts/convert_to_gguf.py` - Convert to GGUF format with multiple quantizations
+- `scripts/create_ollama_model.py` - Generate Ollama Modelfile and import
+
+Quantization targets:
+- Q8_0: Highest quality (~8GB)
+- Q5_K_M: Balanced (~5.5GB)
+- Q4_K_M: Recommended for 8GB VRAM (~4.5GB)
+
+---

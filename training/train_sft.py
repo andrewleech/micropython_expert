@@ -27,10 +27,12 @@ from datasets import Dataset, concatenate_datasets
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    BitsAndBytesConfig,
     HfArgumentParser,
     TrainingArguments,
     set_seed,
 )
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 
 logging.basicConfig(
@@ -191,16 +193,50 @@ def main():
 
     # Load model
     logger.info(f"Loading model: {config['model_name']}")
-    model = AutoModelForCausalLM.from_pretrained(
-        config["model_name"],
-        torch_dtype=torch.bfloat16 if config.get("bf16", True) else torch.float32,
-        trust_remote_code=True,
-        attn_implementation="flash_attention_2",  # Use Flash Attention if available
-    )
+    # QLoRA: 4-bit quantization for memory efficiency
+    use_qlora = config.get("use_qlora", True)
+
+    if use_qlora:
+        logger.info("Using QLoRA with 4-bit quantization")
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            config["model_name"],
+            quantization_config=bnb_config,
+            trust_remote_code=True,
+            attn_implementation="sdpa",
+        )
+        model = prepare_model_for_kbit_training(model)
+
+        # LoRA configuration
+        lora_config = LoraConfig(
+            r=config.get("lora_r", 64),
+            lora_alpha=config.get("lora_alpha", 128),
+            lora_dropout=config.get("lora_dropout", 0.05),
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+    else:
+        # Full precision training
+        model = AutoModelForCausalLM.from_pretrained(
+            config["model_name"],
+            torch_dtype=torch.bfloat16 if config.get("bf16", True) else torch.float32,
+            trust_remote_code=True,
+            attn_implementation="sdpa",
+        )
 
     # Enable gradient checkpointing if configured
     if config.get("gradient_checkpointing", True):
-        model.gradient_checkpointing_enable()
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
 
     # Load datasets
     train_ds, eval_ds = load_all_datasets(config)
@@ -223,8 +259,9 @@ def main():
         weight_decay=config.get("weight_decay", 0.01),
         max_grad_norm=config.get("max_grad_norm", 1.0),
         bf16=config.get("bf16", True),
-        tf32=config.get("tf32", True),
+        tf32=config.get("tf32", False),
         gradient_checkpointing=config.get("gradient_checkpointing", True),
+        optim=config.get("optim", "adamw_8bit"),  # 8-bit Adam saves 4x optimizer memory
         save_strategy=config.get("save_strategy", "steps"),
         save_steps=config.get("save_steps", 500),
         save_total_limit=config.get("save_total_limit", 3),
@@ -234,7 +271,7 @@ def main():
         report_to=config.get("report_to", "tensorboard"),
         dataloader_num_workers=config.get("dataloader_num_workers", 4),
         dataloader_pin_memory=config.get("dataloader_pin_memory", True),
-        max_seq_length=config.get("max_seq_length", 4096),
+        max_length=config.get("max_seq_length", 4096),
         packing=config.get("packing", False),
         remove_unused_columns=True,
         seed=42,

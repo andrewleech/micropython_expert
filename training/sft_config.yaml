@@ -2,12 +2,12 @@
 # Target: RTX 8000 (48GB VRAM)
 
 # Model
-model_name: Qwen/Qwen3-Coder-8B-Instruct
-output_dir: ./models/micropython-expert-8b
+model_name: Qwen/Qwen2.5-Coder-7B-Instruct
+output_dir: ./models/micropython-expert-7b
 
 # Training hyperparameters
 num_train_epochs: 3
-per_device_train_batch_size: 4
+per_device_train_batch_size: 4    # QLoRA uses much less memory
 gradient_accumulation_steps: 8    # Effective batch size: 32
 learning_rate: 2.0e-5
 lr_scheduler_type: cosine
@@ -16,13 +16,20 @@ weight_decay: 0.01
 max_grad_norm: 1.0
 
 # Sequence length
-max_seq_length: 4096              # Covers most reviews with context
+max_seq_length: 2048              # 99.2% of examples fit; saves significant VRAM
+
+# QLoRA - 4-bit quantization with LoRA adapters
+# Standard approach for 7B+ models, quality matches full fine-tuning for SFT
+use_qlora: true
+lora_r: 64            # LoRA rank
+lora_alpha: 128       # LoRA alpha (scaling)
+lora_dropout: 0.05
 packing: false                    # Don't pack sequences (preserves example boundaries)
 
 # Memory optimization for 48GB VRAM
 gradient_checkpointing: true
 bf16: true
-tf32: true                        # Enable TF32 for faster matmuls on Ampere+
+tf32: false                       # TF32 requires Ampere+ (RTX 8000 is Turing)
 
 # Checkpointing and saving
 save_strategy: steps
