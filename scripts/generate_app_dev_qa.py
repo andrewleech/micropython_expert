@@ -327,8 +327,16 @@ def generate_app_dev_qa(topic_filter: str = None):
     print(f"\n=== Saving {len(all_qa_pairs)} Q&A pairs ===")
 
     output_path = OUTPUT_DIR / "app_dev_qa.jsonl"
-    with open(output_path, "w") as f:
+    valid_count = 0
+    skipped_count = 0
+    # Append if filtering by topic, overwrite otherwise
+    mode = "a" if topic_filter else "w"
+    with open(output_path, mode) as f:
         for pair in all_qa_pairs:
+            # Skip malformed pairs
+            if "question" not in pair or "answer" not in pair:
+                skipped_count += 1
+                continue
             sft_example = {
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
@@ -342,6 +350,10 @@ def generate_app_dev_qa(topic_filter: str = None):
                 },
             }
             f.write(json.dumps(sft_example) + "\n")
+            valid_count += 1
+
+    if skipped_count:
+        print(f"  Skipped {skipped_count} malformed pairs")
 
     print(f"Wrote to {output_path}")
 
