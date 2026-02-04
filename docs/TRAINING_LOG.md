@@ -6,25 +6,37 @@ This document tracks training runs, hyperparameters, and metrics.
 
 ## Training Runs
 
-*No training runs yet. Training will be performed on RTX 8000 (48GB VRAM).*
+*Training pending - waiting for RTX 8000 access.*
+
+### Dataset Summary
+
+| Dataset | Examples | Purpose |
+|---------|----------|---------|
+| combined_sft.jsonl | 23,679 | SFT training |
+| dpo_preferences.jsonl | 5,359 | DPO alignment |
+| held_out_reviews.jsonl | 1,861 | Evaluation |
 
 ### Planned Configuration
 
 **SFT Training:**
 - Model: Qwen/Qwen3-Coder-8B-Instruct
+- Dataset: combined_sft.jsonl (23,679 examples)
 - Epochs: 3
 - Batch size: 4 (gradient accumulation: 8, effective: 32)
 - Learning rate: 2e-5
 - Scheduler: cosine with warmup
 - Max sequence length: 4096
 - Precision: bf16
+- Estimated time: 8-12 hours
 
 **DPO Training:**
 - Starting checkpoint: SFT output
+- Dataset: dpo_preferences.jsonl (5,359 pairs)
 - Epochs: 1
 - Batch size: 2 (gradient accumulation: 8, effective: 16)
 - Learning rate: 5e-7
 - Beta: 0.1
+- Estimated time: 1-2 hours
 
 ---
 
