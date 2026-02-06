@@ -32,6 +32,12 @@ bf16: true
 tf32: false                       # TF32 requires Ampere+ (RTX 8000 is Turing)
 
 # Checkpointing and saving
+# NOTE: Consider reducing save_steps to 200-250 for long training runs.
+# At ~155s/step, 500 steps = ~21 hours between checkpoints.
+# More frequent saves reduce lost progress on crash with minimal overhead:
+# - Each checkpoint: ~600MB (adapters + optimizer state)
+# - save_total_limit caps disk usage to N checkpoints
+# - Save I/O overhead: ~10-30 seconds (negligible vs step time)
 save_strategy: steps
 save_steps: 500
 save_total_limit: 3
