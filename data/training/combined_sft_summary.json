@@ -1,12 +1,17 @@
 {
-  "combined_at": "2026-02-04T13:58:49.891818",
-  "total_examples": 23679,
+  "combined_at": "2026-02-10T19:16:36.408171",
+  "total_examples": 15460,
   "random_seed": 42,
   "datasets": {
     "reviews_sft.jsonl": {
-      "original": 16753,
+      "original": 7532,
       "weight": 1.0,
-      "after_weighting": 16753
+      "after_weighting": 7532
+    },
+    "pr_reviews.jsonl": {
+      "original": 501,
+      "weight": 2.0,
+      "after_weighting": 1002
     },
     "wiki_qa.jsonl": {
       "original": 403,
@@ -26,6 +31,8 @@
   },
   "weights": {
     "reviews_sft.jsonl": 1.0,
+    "pr_reviews.jsonl": 2.0,
+    "synthetic_reviews.jsonl": 2.5,
     "wiki_qa.jsonl": 1.2,
     "codebase_qa.jsonl": 1.5,
     "app_dev_qa.jsonl": 1.0

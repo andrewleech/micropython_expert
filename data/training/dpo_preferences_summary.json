@@ -1,7 +1,9 @@
 {
-  "exported_at": "2026-02-03T21:45:14.889899",
-  "total_pairs": 5359,
-  "severity_pairs": 4931,
-  "style_pairs": 428,
-  "random_seed": 42
+  "total_pairs": 4698,
+  "pair_counts": {
+    "specificity": 1500,
+    "role_confusion": 2000,
+    "severity": 1198
+  },
+  "output_file": "/home/anl/mpy/micropython-expert/data/training/dpo_preferences.jsonl"
 }

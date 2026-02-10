@@ -411,3 +411,94 @@ Quantization targets:
 - Q4_K_M: Recommended for 8GB VRAM (~4.5GB)
 
 ---
+
+## 2026-02-10: Training Data Pipeline Refinement
+
+### Motivation
+
+Benchmark results (2026-02-09) showed the fine-tuned Qwen2.5-Coder-7B scored 1.79-2.02/5 on review quality vs 2.63-3.59 for Claude baselines. Judge characterized outputs as "fabricated responses that don't engage with the actual diff" and "PR descriptions written from the author's perspective."
+
+Root cause analysis of the v1 training data:
+- 61% of SFT examples were issue_comments (no diff context, includes merge acks, CI reports, general discussion)
+- 2,189 merge + 1,583 praise + 5,869 information comments were trained as "reviews"
+- Only 5,199 review_comments were substantive (feedback_type in suggestion/requirement/question)
+- Random 10% eval split caused data leakage — comments from the same PR appeared in both train and eval
+- DPO `export_dpo_dataset.py` hardcoded `<|system|>...<|end|>` tokens (wrong for Qwen's chat template)
+
+### Changes Made
+
+**Rewrote `export_sft_dataset.py`:**
+- Filtered to substantive review_comments only: feedback_type in (suggestion, requirement, question), diff_hunk IS NOT NULL, in_reply_to_id IS NULL
+- Dropped all issue_comments and reviews tables
+- Added quality-weighted oversampling: has_code_suggestion (1.5x), is_pattern (1.2x), is_style_example (1.3x), weights stack multiplicatively
+- Changed from random eval split to PR-based split: entire PRs assigned to train or eval (10% of PRs)
+- Output: 7,532 train + 551 eval from 4,537 substantive comments
+
+**New `export_pr_reviews.py`:**
+- Aggregates PRs with 3+ substantive review_comments into single multi-comment training examples
+- Teaches the model structured multi-issue reviews rather than isolated comments
+- Output: 501 examples from 543 qualifying PRs (42 skipped as >30k chars)
+
+**Rewrote `export_dpo_dataset.py`:**
+- Replaced hardcoded `<|system|>...<|end|>` prompt format with messages-based list for TRL DPOTrainer
+- 4 pair types targeting identified failure modes:
+  - Role confusion (2,000): substantive review vs merge/praise/information
+  - Specificity (1,500): comments with code suggestions vs without
+  - Conciseness (synthetic via Claude CLI, optional): terse rewrites of verbose originals
+  - Severity (1,198): blocking > suggestion > nitpick preference ordering
+- Output (without conciseness): 4,698 pairs
+
+**New `generate_synthetic_reviews.py`:**
+- Generates (diff → review) training pairs via `claude -p` (Claude Code CLI, no API key needed)
+- Selects PRs by diff complexity, builds prompts with dpgeorge style guide + 3 few-shot examples
+- Checkpoint/resume support
+- Not yet executed (~30min runtime)
+
+**Updated `combine_datasets.py`:**
+- Updated weights: reviews_sft (1.0), pr_reviews (2.0), synthetic_reviews (2.5), wiki_qa (1.2), codebase_qa (1.5), app_dev_qa (1.0)
+- Current output: 15,460 combined examples (synthetic_reviews pending)
+
+**New `validate_training_data.py`:**
+- 8 automated quality checks run before training:
+  1. No role confusion in assistant responses
+  2. All SFT examples have diff context
+  3. No train/eval PR leakage
+  4. No raw special tokens in DPO prompts
+  5. Response length sanity (3-5000 chars)
+  6. Balanced domains (<40% each)
+  7. No accidental duplicate source comments
+  8. Correct message format [system, user, assistant]
+- All 8 checks passing
+
+### Validation Fixes During Development
+
+Initial validation run exposed 4 issues that required fixes:
+- Role confusion false positive: "Thanks for fixing this, but..." flagged as role confusion. Fixed regex to match standalone phrases only.
+- Old DPO file had `<|system|>...<|end|>` tokens. Regenerated with new script.
+- 67 terse dpgeorge reviews under 10 chars (e.g., "uint32_t?", "(void)", "`void`"). Lowered threshold to 3 chars.
+- 3,620 apparent duplicates were intentional oversampling copies. Changed dedup check to verify comment_id consistency instead.
+
+### Dataset Comparison: v1 vs v2
+
+| Metric | v1 (2026-02-04) | v2 (2026-02-10) |
+|--------|-----------------|-----------------|
+| SFT review examples | 16,753 (mixed) | 7,532 (substantive only) |
+| Issue comments included | 9,518 | 0 |
+| Review verdicts included | 393 | 0 |
+| PR-based eval split | No (random) | Yes (133 eval PRs) |
+| Quality oversampling | No | Yes (weighted by code suggestion, pattern, style) |
+| PR review aggregation | No | 501 multi-comment reviews |
+| DPO pair types | 2 (severity, style) | 4 (role confusion, specificity, conciseness, severity) |
+| DPO prompt format | Hardcoded tokens | Messages-based (model-agnostic) |
+| Validation checks | None | 8 automated checks |
+| Combined SFT total | 23,679 | 15,460 (synthetic pending) |
+
+### Notes
+- `claude -p` (Claude Code CLI) uses existing Claude Code authentication — no separate API key needed
+- Synthetic data generation scripts (generate_synthetic_reviews.py, DPO conciseness pairs) not yet executed
+- After synthetic generation and re-combination, expected total ~17,000 SFT examples + ~5,200 DPO pairs
+
+### Status
+**Phase: Training data v2 COMPLETE — pending synthetic generation and retraining**
+
+---

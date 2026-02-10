@@ -1,0 +1,12 @@
+{
+  "exported_at": "2026-02-10T19:09:29.377380",
+  "total_qualifying_prs": 543,
+  "total_output_examples": 501,
+  "skipped_too_large": 42,
+  "skipped_empty_response": 0,
+  "total_comments_included": 2834,
+  "avg_comments_per_pr": 5.7,
+  "total_unique_files": 979,
+  "max_diff_chars": 30000,
+  "min_comments": 3
+}

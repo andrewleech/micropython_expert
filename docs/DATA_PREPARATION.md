@@ -1,44 +1,61 @@
 # Data Preparation Guide
 
-This document describes the datasets used for training the MicroPython Expert model.
+This document describes the v2 training data pipeline for the MicroPython Expert model.
 
 ## Dataset Overview
 
 | Dataset | Source | Examples | Status |
 |---------|--------|----------|--------|
-| reviews_sft.jsonl | dpgeorge review database | 16,753 | ✅ Complete |
-| wiki_qa.jsonl | GitHub wiki pages | 403 | ✅ Complete |
-| codebase_qa.jsonl | MicroPython source code | 3,936 | ✅ Complete |
-| app_dev_qa.jsonl | Practical usage topics | 539 | ✅ Complete |
-| dpo_preferences.jsonl | Severity-ranked reviews | 5,359 | ✅ Complete |
-| combined_sft.jsonl | Weighted combination | 23,679 | ✅ Complete |
+| reviews_sft.jsonl | Filtered substantive review_comments | 7,532 (from 4,537 before oversampling) | Complete |
+| pr_reviews.jsonl | Aggregated multi-comment PR reviews | 501 | Complete |
+| synthetic_reviews.jsonl | Claude-generated (diff->review) pairs | ~500 target | Pending |
+| wiki_qa.jsonl | GitHub wiki pages | 403 | Complete (unchanged) |
+| codebase_qa.jsonl | MicroPython source code | 3,936 | Complete (unchanged) |
+| app_dev_qa.jsonl | Practical usage topics | 539 | Complete (unchanged) |
+| dpo_preferences.jsonl | Targeted failure mode pairs | 4,698 | Complete (excl. conciseness) |
+| combined_sft.jsonl | Weighted combination | 15,460 | Complete (synthetic pending) |
 
 ## Combined Dataset Summary
 
-| Dataset | Original | Weight | After Weighting | % of Total |
-|---------|----------|--------|-----------------|------------|
-| reviews_sft | 16,753 | 1.0 | 16,753 | 70.8% |
-| wiki_qa | 403 | 1.2 | 483 | 2.0% |
-| codebase_qa | 3,936 | 1.5 | 5,904 | 24.9% |
-| app_dev_qa | 539 | 1.0 | 539 | 2.3% |
-| **Total** | **21,631** | | **23,679** | **100%** |
+| Dataset | Original | Weight | After Weighting |
+|---------|----------|--------|-----------------|
+| reviews_sft | 7,532 | 1.0 | 7,532 |
+| pr_reviews | 501 | 2.0 | 1,002 |
+| synthetic_reviews | ~500 | 2.5 | ~1,250 (pending) |
+| wiki_qa | 403 | 1.2 | 483 |
+| codebase_qa | 3,936 | 1.5 | 5,904 |
+| app_dev_qa | 539 | 1.0 | 539 |
 
 ## 1. Review SFT Dataset (reviews_sft.jsonl)
 
-**Source:** `/data/raw/dpgeorge_reviews.db` (from dpgeorge-review-db project)
+**Source:** `dpgeorge_reviews.db` (from dpgeorge-review-db project)
 
 **Generation:** `python scripts/export_sft_dataset.py`
 
-**Contents:**
-- 6,842 inline code review comments with diff context
-- 9,518 PR discussion comments
-- 393 review verdicts (APPROVED/CHANGES_REQUESTED)
+**Filtering:**
+- Only `review_comments` (inline code comments with diff context)
+- `feedback_type` in (`suggestion`, `requirement`, `question`)
+- `diff_hunk IS NOT NULL`
+- `in_reply_to_id IS NULL` (top-level comments only)
+- All `issue_comments` and review verdicts are dropped (these lack diff context and cause role confusion)
+
+**Result:** 4,537 substantive comments -> 7,532 after quality oversampling.
+
+**Quality oversampling:**
+- `has_code_suggestion`: 1.5x
+- `is_pattern`: 1.2x
+- `is_style_example`: 1.3x
+- Weights multiply (e.g. a comment with both `has_code_suggestion` and `is_pattern` gets 1.5 * 1.2 = 1.8x)
+
+**Eval split:** PR-based (no PR appears in both train and eval).
+- 1,206 train PRs (7,532 examples)
+- 133 eval PRs (551 examples)
 
 **Format:**
 ```json
 {
   "messages": [
-    {"role": "system", "content": "...review system prompt..."},
+    {"role": "system", "content": "...inline review system prompt..."},
     {"role": "user", "content": "Review the following code..."},
     {"role": "assistant", "content": "...actual dpgeorge review..."}
   ],
@@ -53,12 +70,38 @@ This document describes the datasets used for training the MicroPython Expert mo
 }
 ```
 
-**Notes:**
-- 10% reserved for held-out evaluation (1,861 examples)
-- Metadata includes 13-field categorization from dpgeorge-review-db
-- Three system prompts: inline_review, pr_discussion, review_verdict
+Single system prompt focused on inline code review. Metadata includes 13-field categorization from dpgeorge-review-db.
 
-## 2. Wiki Q&A Dataset (wiki_qa.jsonl)
+## 2. PR Review Aggregation (pr_reviews.jsonl)
+
+**Source:** `dpgeorge_reviews.db`
+
+**Generation:** `python scripts/export_pr_reviews.py`
+
+**Contents:**
+- PRs with 3+ substantive review_comments aggregated into single training examples
+- 543 qualifying PRs -> 501 examples (42 skipped where diff context exceeded 30k chars)
+
+**Structure:**
+- User prompt: PR title + body + concatenated diffs from reviewed files
+- Assistant response: file-grouped multi-issue review combining all comments for that PR
+
+**Format:** Same JSONL messages format as reviews_sft.
+
+## 3. Synthetic Reviews (synthetic_reviews.jsonl)
+
+**Status:** Pending.
+
+**Generation:** `python scripts/generate_synthetic_reviews.py`
+
+**Method:**
+- Uses `claude -p --model claude-haiku-4-5-20251001` (Claude Code CLI, no separate API key needed)
+- Selects ~500 PRs by diff complexity
+- Builds prompts with dpgeorge style guide + 3 few-shot examples from the review database
+- Checkpoint/resume via `.synthetic_checkpoint.json`
+- Runtime: ~30 minutes
+
+## 4. Wiki Q&A Dataset (wiki_qa.jsonl)
 
 **Source:** https://github.com/micropython/micropython/wiki
 
@@ -85,7 +128,7 @@ This document describes the datasets used for training the MicroPython Expert mo
 }
 ```
 
-## 3. Codebase Q&A Dataset (codebase_qa.jsonl)
+## 5. Codebase Q&A Dataset (codebase_qa.jsonl)
 
 **Source:** MicroPython source code (submodule at `./micropython/`, pinned to v1.27.0)
 
@@ -126,7 +169,7 @@ This document describes the datasets used for training the MicroPython Expert mo
 }
 ```
 
-## 4. Application Development Q&A (app_dev_qa.jsonl)
+## 6. Application Development Q&A (app_dev_qa.jsonl)
 
 **Source:** Claude-generated from wiki context + practical topics
 
@@ -166,92 +209,99 @@ This document describes the datasets used for training the MicroPython Expert mo
 }
 ```
 
-## 5. DPO Preferences (dpo_preferences.jsonl)
-
-**Source:** Review database severity rankings
+## 7. DPO Preferences (dpo_preferences.jsonl)
 
 **Generation:** `python scripts/export_dpo_dataset.py`
 
-**Contents:**
-- 4,931 severity-based pairs (blocking > suggestion > nitpick)
-- 428 style-based pairs (is_style_example = true preferred)
+**Total: 4,698 pairs** (without conciseness pairs).
+
+Four pair types targeting identified model failure modes:
+
+| Pair Type | Count | Description |
+|-----------|-------|-------------|
+| Role confusion | ~2,000 | Substantive review_comment (chosen) vs merge/praise issue_comment (rejected) |
+| Specificity | ~1,500 | Comments with code suggestions (chosen) vs without (rejected), matched by domain/component |
+| Severity | ~1,198 | Higher severity preferred (blocking > suggestion > nitpick) |
+| Conciseness | synthetic, optional | Terse Claude rewrite (chosen) vs verbose original (rejected). Requires `claude -p`. Use `--skip-conciseness` to skip |
 
 **Format:**
 ```json
 {
-  "prompt": "<|system|>...<|user|>...",
-  "chosen": "...blocking/suggestion review...",
-  "rejected": "...nitpick/non-style review..."
+  "prompt": [
+    {"role": "system", "content": "..."},
+    {"role": "user", "content": "..."}
+  ],
+  "chosen": "chosen response text",
+  "rejected": "rejected response text",
+  "type": "role_confusion"
 }
 ```
 
+The prompt field uses messages-based format (not hardcoded chat template tokens).
+
 ## Evaluation Datasets
 
-Located in `/data/eval/`:
+Located in `data/eval/`:
 
 | Dataset | Purpose | Examples |
 |---------|---------|----------|
-| held_out_reviews.jsonl | Style/quality eval | 1,861 |
+| held_out_reviews.jsonl | Style/quality eval | 551 |
 | factual_qa.jsonl | Factual accuracy | 113 |
 | port_knowledge.jsonl | Port-specific accuracy | 95 |
 | style_benchmark.jsonl | A/B style testing | 200 |
 
 **Generation:** `python scripts/generate_eval_benchmark.py --all`
 
-## Data Quality Notes
+## Validation
 
-1. **Review data** is real human-written content from a single expert (dpgeorge)
-2. **Wiki data** is community-maintained, quality varies
-3. **Generated Q&A** uses Claude (haiku) with source code context for grounding
-4. **DPO pairs** assume severity ranking correlates with feedback quality
-5. **Malformed responses** (24 total) were filtered during app_dev generation
+`python scripts/validate_training_data.py` runs 8 automated checks that must pass before training:
+
+1. All JSONL files parse without errors
+2. Every example has the required `messages` field with system/user/assistant roles
+3. No empty assistant responses
+4. No duplicate examples (by content hash)
+5. DPO pairs have `prompt`, `chosen`, `rejected`, and `type` fields
+6. Train/eval PR sets are disjoint (no data leakage)
+7. Combined dataset weights match expected counts within tolerance
+8. Metadata fields present and non-null where required
 
 ## Running Data Preparation
 
-Complete sequence (already run):
 ```bash
 cd /home/anl/mpy/micropython-expert
 source venv/bin/activate
 
-# Step 1: Export review data (done)
 python scripts/export_sft_dataset.py
-
-# Step 2: Scrape wiki (done)
-python scripts/scrape_wiki.py
-
-# Step 3: Export DPO preferences (done)
-python scripts/export_dpo_dataset.py
-
-# Step 4: Generate codebase Q&A (done - took ~5 hours)
-python scripts/generate_codebase_qa.py
-
-# Step 5: Generate app dev Q&A (done - took ~1.5 hours)
-python scripts/generate_app_dev_qa.py
-
-# Step 6: Generate eval benchmarks (done)
-python scripts/generate_eval_benchmark.py --all
-
-# Step 7: Combine datasets (done)
+python scripts/export_pr_reviews.py
+python scripts/export_dpo_dataset.py          # add --skip-conciseness for fast run
+python scripts/generate_synthetic_reviews.py  # optional, ~30min, uses Claude Code CLI
 python scripts/combine_datasets.py
+python scripts/validate_training_data.py      # must pass before training
 ```
 
-## File Sizes
-
-```
-data/training/
-  reviews_sft.jsonl       40M   16,753 examples
-  wiki_qa.jsonl          574K      403 examples
-  codebase_qa.jsonl      4.2M    3,936 examples
-  app_dev_qa.jsonl       590K      539 examples
-  dpo_preferences.jsonl   10M    5,359 pairs
-  combined_sft.jsonl      57M   23,679 examples (weighted)
-
-data/eval/
-  held_out_reviews.jsonl  4.4M   1,861 examples
-  factual_qa.jsonl         44K     113 examples
-  port_knowledge.jsonl     35K      95 examples
-  style_benchmark.jsonl   300K     200 examples
+Wiki, codebase, and app_dev datasets do not need regeneration unless sources change:
+```bash
+python scripts/scrape_wiki.py                 # only if wiki content updated
+python scripts/generate_codebase_qa.py        # only if pinned micropython version changes (~5 hours)
+python scripts/generate_app_dev_qa.py         # only if topics change (~1.5 hours)
+python scripts/generate_eval_benchmark.py --all  # only if eval criteria change
 ```
 
-Total training data: ~112MB
-Total eval data: ~4.8MB
+## Data Quality Notes
+
+1. **Review data** is real human-written content from a single expert (dpgeorge), filtered to substantive inline comments only
+2. **Wiki data** is community-maintained, quality varies
+3. **Generated Q&A** uses Claude (haiku) with source code context for grounding
+4. **DPO pairs** target specific failure modes observed in v1 benchmarks (role confusion, lack of specificity, severity awareness)
+5. **Malformed responses** (24 total) were filtered during app_dev generation
+
+## v1 to v2 Migration
+
+v2 replaced the v1 pipeline on Feb 4, 2025. Benchmark results from v1 showed the model produced fabricated responses, traced to training on `issue_comments` that lack diff context. The model learned to generate merge approvals and generic praise instead of substantive code review.
+
+Key changes in v2:
+- **Filtered to substantive review_comments only.** Dropped all issue_comments and review verdicts. Only review_comments with feedback_type in (suggestion, requirement, question) and a non-null diff_hunk are included.
+- **PR-based eval split.** Train and eval sets are split by PR number, not random sampling, to prevent data leakage from multi-comment PRs.
+- **Quality oversampling.** Comments with code suggestions, reusable patterns, or style examples are oversampled to increase their representation.
+- **Targeted DPO pairs.** Replaced generic severity-only DPO with four pair types addressing specific failure modes (role confusion, specificity, conciseness, severity).
+- **Automated validation.** `validate_training_data.py` enforces 8 checks before training can proceed.

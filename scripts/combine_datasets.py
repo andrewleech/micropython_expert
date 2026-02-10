@@ -4,6 +4,8 @@ Combine all training datasets into a single weighted dataset.
 
 Merges:
 - reviews_sft.jsonl (18K) - weight 1.0
+- pr_reviews.jsonl - weight 2.0
+- synthetic_reviews.jsonl - weight 2.5
 - wiki_qa.jsonl (400+) - weight 1.2
 - codebase_qa.jsonl (10K-20K) - weight 1.5
 - app_dev_qa.jsonl (3K-5K) - weight 1.0
@@ -29,6 +31,8 @@ RANDOM_SEED = 42
 # Dataset weights (relative sampling frequency)
 DATASET_WEIGHTS = {
     "reviews_sft.jsonl": 1.0,
+    "pr_reviews.jsonl": 2.0,
+    "synthetic_reviews.jsonl": 2.5,
     "wiki_qa.jsonl": 1.2,
     "codebase_qa.jsonl": 1.5,
     "app_dev_qa.jsonl": 1.0,

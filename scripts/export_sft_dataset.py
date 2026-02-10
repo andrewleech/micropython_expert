@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""
-Export review database to SFT (Supervised Fine-Tuning) dataset format.
+"""Export SFT dataset from dpgeorge review comments.
 
-Converts categorized reviews into instruction-following pairs suitable for
-fine-tuning a code review model.
+Filters to substantive review_comments with diff context, applies quality
+weighting via oversampling, and splits train/eval by PR number.
 
 Output format (JSONL):
 {
@@ -12,30 +11,36 @@ Output format (JSONL):
         {"role": "user", "content": "..."},
         {"role": "assistant", "content": "..."}
     ],
-    "metadata": {...}  # For filtering/analysis
+    "metadata": {...}
 }
 """
 
 import json
+import math
 import random
 import sqlite3
+from collections import Counter
 from pathlib import Path
-from datetime import datetime
-from collections import defaultdict
 
 # Paths
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = PROJECT_ROOT / "data" / "raw" / "dpgeorge_reviews.db"
 OUTPUT_DIR = PROJECT_ROOT / "data" / "training"
 EVAL_DIR = PROJECT_ROOT / "data" / "eval"
 
-# Reserve 10% for held-out evaluation
-EVAL_FRACTION = 0.10
+EVAL_SPLIT_RATIO = 0.10
 RANDOM_SEED = 42
 
-# System prompts for different review tasks
-SYSTEM_PROMPTS = {
-    "inline_review": """You are an expert MicroPython code reviewer with deep knowledge of the codebase. Your reviews are concise, technically precise, and focus on correctness, performance, and maintainability. You write in a direct, no-nonsense style - technical facts without unnecessary pleasantries.
+# Quality weights for oversampling
+WEIGHT_CODE_SUGGESTION = 1.5
+WEIGHT_PATTERN = 1.2
+WEIGHT_STYLE_EXAMPLE = 1.3
+
+SYSTEM_PROMPT = """\
+You are an expert MicroPython code reviewer with deep knowledge of the codebase. \
+Your reviews are concise, technically precise, and focus on correctness, performance, \
+and maintainability. You write in a direct, no-nonsense style - technical facts without \
+unnecessary pleasantries.
 
 When reviewing code:
 - Identify potential bugs, edge cases, and correctness issues
@@ -44,320 +49,391 @@ When reviewing code:
 - Flag deviations from MicroPython coding conventions
 - Suggest specific improvements with code examples when helpful
 
-Keep feedback actionable and specific to the code shown.""",
-
-    "pr_discussion": """You are an expert MicroPython maintainer providing feedback on pull requests. You have intimate knowledge of the codebase architecture, coding standards, and design philosophy. Your responses are direct and technically focused.
-
-When discussing PRs:
-- Address the overall approach and design choices
-- Point out architectural implications
-- Consider impact on other ports and subsystems
-- Reference relevant existing code patterns when appropriate
-- Be clear about what changes are required vs suggested
-
-Avoid unnecessary praise - focus on technical substance.""",
-
-    "review_verdict": """You are an expert MicroPython maintainer providing a final review verdict on a pull request. Your assessment should be clear about what's needed before the PR can be merged.
-
-Provide:
-- A clear verdict (approve, request changes, or needs discussion)
-- Key issues that must be addressed
-- Overall assessment of the approach
-- Any blocking concerns
-
-Be direct and specific about what needs to change.""",
-}
+Keep feedback actionable and specific to the code shown."""
 
 
-def get_connection():
+def get_connection() -> sqlite3.Connection:
     """Get database connection."""
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def build_review_context(row, pr_info=None):
-    """Build context string for a review comment."""
+def load_pr_info(conn: sqlite3.Connection) -> dict[int, dict]:
+    """Load PR metadata keyed by pr_number."""
+    rows = conn.execute(
+        "SELECT number, title, author, state, changed_files, additions, deletions "
+        "FROM prs"
+    ).fetchall()
+    return {
+        r["number"]: {
+            "title": r["title"],
+            "author": r["author"],
+            "state": r["state"],
+            "changed_files": r["changed_files"],
+            "additions": r["additions"],
+            "deletions": r["deletions"],
+        }
+        for r in rows
+    }
+
+
+def load_categories(conn: sqlite3.Connection) -> dict[int, dict]:
+    """Load comment categories for review_comments, keyed by comment_id."""
+    rows = conn.execute(
+        """
+        SELECT cc.comment_id, cc.theme, cc.severity, cc.is_style_example,
+               cc.component, cc.port, cc.subsystem, cc.language_context,
+               cc.code_construct, cc.concern_type, cc.feedback_type,
+               cc.is_pattern, cc.cpython_related, cc.has_code_suggestion,
+               cc.keywords, d.name AS domain
+        FROM comment_categories cc
+        LEFT JOIN domains d ON cc.domain_id = d.id
+        WHERE cc.comment_type = 'review_comment'
+        """
+    ).fetchall()
+    return {r["comment_id"]: dict(r) for r in rows}
+
+
+def load_substantive_comments(
+    conn: sqlite3.Connection, categories: dict[int, dict]
+) -> list[dict]:
+    """Load review_comments that pass all substantive filters.
+
+    Filters:
+    - Has a category entry with feedback_type in (suggestion, requirement, question)
+    - diff_hunk IS NOT NULL
+    - in_reply_to_id IS NULL (top-level comments only)
+    - theme != 'FAILED_CATEGORIZATION'
+    """
+    rows = conn.execute(
+        """
+        SELECT rc.id, rc.pr_number, rc.body, rc.path, rc.line,
+               rc.diff_hunk, rc.in_reply_to_id
+        FROM review_comments rc
+        WHERE rc.diff_hunk IS NOT NULL
+          AND rc.in_reply_to_id IS NULL
+        """
+    ).fetchall()
+
+    accepted_feedback = {"suggestion", "requirement", "question"}
+    comments = []
+    filtered_no_category = 0
+    filtered_feedback_type = 0
+    filtered_failed = 0
+
+    for r in rows:
+        cat = categories.get(r["id"])
+        if cat is None:
+            filtered_no_category += 1
+            continue
+        if cat["feedback_type"] not in accepted_feedback:
+            filtered_feedback_type += 1
+            continue
+        if cat["theme"] == "FAILED_CATEGORIZATION":
+            filtered_failed += 1
+            continue
+
+        comments.append({
+            "id": r["id"],
+            "pr_number": r["pr_number"],
+            "body": r["body"],
+            "path": r["path"],
+            "line": r["line"],
+            "diff_hunk": r["diff_hunk"],
+            "category": cat,
+        })
+
+    print(f"  Top-level comments with diff_hunk: {len(rows)}")
+    print(f"  Filtered - no category record:     {filtered_no_category}")
+    print(f"  Filtered - wrong feedback_type:     {filtered_feedback_type}")
+    print(f"  Filtered - FAILED_CATEGORIZATION:   {filtered_failed}")
+    print(f"  Substantive comments retained:      {len(comments)}")
+
+    return comments
+
+
+def build_review_context(comment: dict, pr_info: dict | None) -> str:
+    """Build the user prompt with PR context and diff."""
     parts = []
 
-    # Add PR context if available
     if pr_info:
-        parts.append(f"PR #{pr_info['number']}: {pr_info['title']}")
-        if pr_info.get('body'):
-            # Truncate long PR bodies
-            body = pr_info['body']
-            if len(body) > 500:
-                body = body[:500] + "..."
-            parts.append(f"\nPR Description:\n{body}")
+        title = pr_info.get("title", "")
+        author = pr_info.get("author", "")
+        if title:
+            parts.append(f"PR: {title}")
+        if author:
+            parts.append(f"Author: {author}")
 
-    # Add file context for inline reviews
-    if row.get('path'):
-        parts.append(f"\nFile: {row['path']}")
-        if row.get('line'):
-            parts.append(f"Line: {row['line']}")
+    path = comment.get("path", "")
+    if path:
+        parts.append(f"File: {path}")
 
-    # Add diff hunk (the actual code being reviewed)
-    if row.get('diff_hunk'):
-        parts.append(f"\nCode diff:\n```\n{row['diff_hunk']}\n```")
+    line = comment.get("line")
+    if line:
+        parts.append(f"Line: {line}")
+
+    parts.append("")
+    parts.append("```diff")
+    parts.append(comment["diff_hunk"].rstrip())
+    parts.append("```")
+
+    parts.append("")
+    parts.append("Please review the code change shown above.")
 
     return "\n".join(parts)
 
 
-def build_metadata(row, category):
-    """Build metadata dict for filtering/analysis."""
-    return {
-        "comment_id": row["id"],
-        "pr_number": row["pr_number"],
-        "domain": category.get("domain"),
-        "severity": category.get("severity"),
-        "component": category.get("component"),
-        "language_context": category.get("language_context"),
-        "feedback_type": category.get("feedback_type"),
-        "is_style_example": bool(category.get("is_style_example")),
-        "is_pattern": bool(category.get("is_pattern")),
-        "has_code_suggestion": bool(category.get("has_code_suggestion")),
-        "path": row.get("path"),
+def build_metadata(comment: dict, pr_info: dict | None) -> dict:
+    """Build metadata dict for the JSONL record."""
+    cat = comment["category"]
+    meta = {
+        "comment_id": comment["id"],
+        "pr_number": comment["pr_number"],
+        "path": comment.get("path"),
+        "domain": cat.get("domain"),
+        "severity": cat.get("severity"),
+        "component": cat.get("component"),
+        "feedback_type": cat.get("feedback_type"),
+        "concern_type": cat.get("concern_type"),
+        "language_context": cat.get("language_context"),
+        "has_code_suggestion": bool(cat.get("has_code_suggestion")),
+        "is_pattern": bool(cat.get("is_pattern")),
+        "is_style_example": bool(cat.get("is_style_example")),
     }
+    if pr_info:
+        meta["pr_author"] = pr_info.get("author")
+        meta["pr_title"] = pr_info.get("title")
+    return meta
 
 
-def format_inline_review(row, category, pr_info):
-    """Format an inline code review comment as SFT example."""
-    context = build_review_context(row, pr_info)
-
-    user_prompt = f"""Review the following code change:
-
-{context}
-
-Provide specific, actionable feedback on this code."""
-
-    return {
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPTS["inline_review"]},
-            {"role": "user", "content": user_prompt},
-            {"role": "assistant", "content": row["body"]},
-        ],
-        "metadata": build_metadata(row, category),
-        "source": "review_comment",
-    }
+def compute_quality_weight(category: dict) -> float:
+    """Compute multiplicative quality weight from category flags."""
+    weight = 1.0
+    if category.get("has_code_suggestion"):
+        weight *= WEIGHT_CODE_SUGGESTION
+    if category.get("is_pattern"):
+        weight *= WEIGHT_PATTERN
+    if category.get("is_style_example"):
+        weight *= WEIGHT_STYLE_EXAMPLE
+    return weight
 
 
-def format_pr_discussion(row, category, pr_info):
-    """Format a PR discussion comment as SFT example."""
-    context_parts = [f"PR #{pr_info['number']}: {pr_info['title']}"]
+def apply_oversampling(
+    examples: list[dict], rng: random.Random
+) -> tuple[list[dict], Counter]:
+    """Apply quality-based oversampling.
 
-    if pr_info.get('body'):
-        body = pr_info['body']
-        if len(body) > 1000:
-            body = body[:1000] + "..."
-        context_parts.append(f"\nDescription:\n{body}")
+    For each example with total_weight > 1, add floor(weight - 1) full copies
+    plus one probabilistic copy for the fractional remainder.
+    """
+    result = []
+    weight_counts = Counter()
 
-    # Add some PR stats for context
-    if pr_info.get('changed_files'):
-        context_parts.append(
-            f"\nChanges: {pr_info['changed_files']} files, "
-            f"+{pr_info.get('additions', 0)}/-{pr_info.get('deletions', 0)} lines"
-        )
+    for ex in examples:
+        weight = compute_quality_weight(ex["category"])
+        copies = 1  # always include the original
 
-    context = "\n".join(context_parts)
+        if weight > 1.0:
+            extra = weight - 1.0
+            copies += math.floor(extra)
+            fractional = extra - math.floor(extra)
+            if fractional > 0 and rng.random() < fractional:
+                copies += 1
 
-    user_prompt = f"""Consider this pull request:
+        weight_bucket = f"{weight:.2f}"
+        weight_counts[weight_bucket] += 1
 
-{context}
+        for _ in range(copies):
+            result.append(ex)
 
-Provide feedback on this PR's approach and implementation."""
-
-    return {
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPTS["pr_discussion"]},
-            {"role": "user", "content": user_prompt},
-            {"role": "assistant", "content": row["body"]},
-        ],
-        "metadata": build_metadata(row, category),
-        "source": "issue_comment",
-    }
+    return result, weight_counts
 
 
-def format_review_verdict(row, category, pr_info):
-    """Format a review verdict as SFT example."""
-    context_parts = [f"PR #{pr_info['number']}: {pr_info['title']}"]
+def format_example(comment: dict, pr_info: dict | None) -> dict:
+    """Format a single comment into the messages + metadata JSONL structure."""
+    user_content = build_review_context(comment, pr_info)
+    assistant_content = comment["body"].strip()
 
-    if pr_info.get('body'):
-        body = pr_info['body']
-        if len(body) > 1000:
-            body = body[:1000] + "..."
-        context_parts.append(f"\nDescription:\n{body}")
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+        {"role": "assistant", "content": assistant_content},
+    ]
 
-    verdict_text = row.get('state', 'COMMENTED')
-    context_parts.append(f"\nReview verdict: {verdict_text}")
+    metadata = build_metadata(comment, pr_info)
 
-    context = "\n".join(context_parts)
-
-    user_prompt = f"""Provide a final review for this pull request:
-
-{context}
-
-Give your assessment and any required changes."""
-
-    return {
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPTS["review_verdict"]},
-            {"role": "user", "content": user_prompt},
-            {"role": "assistant", "content": row["body"]},
-        ],
-        "metadata": build_metadata(row, category),
-        "source": "review",
-    }
+    return {"messages": messages, "metadata": metadata}
 
 
-def load_pr_info(conn):
-    """Load all PR info into a dict keyed by pr_number."""
-    cursor = conn.execute("""
-        SELECT number, title, body, changed_files, additions, deletions, base_branch
-        FROM prs
-    """)
-    return {row["number"]: dict(row) for row in cursor}
+def split_by_pr(
+    comments: list[dict], eval_ratio: float, seed: int
+) -> tuple[list[dict], list[dict], set[int]]:
+    """Split comments into train/eval by PR number.
+
+    Entire PRs go into eval (10% of PRs, not 10% of comments).
+    """
+    pr_numbers = sorted(set(c["pr_number"] for c in comments))
+    rng = random.Random(seed)
+    rng.shuffle(pr_numbers)
+
+    n_eval = max(1, int(len(pr_numbers) * eval_ratio))
+    eval_prs = set(pr_numbers[:n_eval])
+
+    train = [c for c in comments if c["pr_number"] not in eval_prs]
+    eval_ = [c for c in comments if c["pr_number"] in eval_prs]
+
+    return train, eval_, eval_prs
 
 
-def load_categories(conn):
-    """Load all categories into a dict keyed by (comment_id, comment_type)."""
-    cursor = conn.execute("""
-        SELECT
-            cc.comment_id, cc.comment_type,
-            d.name as domain, cc.theme, cc.severity, cc.is_style_example,
-            cc.component, cc.port, cc.subsystem, cc.language_context,
-            cc.code_construct, cc.concern_type, cc.feedback_type,
-            cc.is_pattern, cc.cpython_related, cc.has_code_suggestion, cc.keywords
-        FROM comment_categories cc
-        LEFT JOIN domains d ON cc.domain_id = d.id
-        WHERE cc.theme != 'FAILED_CATEGORIZATION'
-    """)
-    categories = {}
-    for row in cursor:
-        key = (row["comment_id"], row["comment_type"])
-        categories[key] = dict(row)
-    return categories
+def write_jsonl(records: list[dict], path: Path) -> None:
+    """Write records to a JSONL file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        for record in records:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def export_sft_dataset():
-    """Export all categorized reviews to SFT format."""
-    print(f"Loading data from {DB_PATH}")
+    """Export substantive review comments to SFT format."""
+    print(f"Database: {DB_PATH}")
+    print(f"Output:   {OUTPUT_DIR}")
+    print()
+
     conn = get_connection()
 
-    # Load lookup tables
+    # Load data
+    print("Loading PR info...")
     pr_info = load_pr_info(conn)
+    print(f"  Loaded {len(pr_info)} PRs")
+
+    print("Loading categories...")
     categories = load_categories(conn)
-    print(f"Loaded {len(pr_info)} PRs, {len(categories)} categorized comments")
+    print(f"  Loaded {len(categories)} review_comment categories")
 
-    # Collect all examples
-    examples = []
-    stats = defaultdict(int)
-
-    # Process inline review comments
-    print("Processing review comments...")
-    cursor = conn.execute("""
-        SELECT id, pr_number, body, path, line, diff_hunk
-        FROM review_comments
-        WHERE body IS NOT NULL AND body != ''
-    """)
-    for row in cursor:
-        key = (row["id"], "review_comment")
-        if key not in categories:
-            stats["uncategorized_review_comments"] += 1
-            continue
-        pr = pr_info.get(row["pr_number"], {"number": row["pr_number"], "title": "Unknown"})
-        example = format_inline_review(dict(row), categories[key], pr)
-        examples.append(example)
-        stats["review_comments"] += 1
-
-    # Process PR discussion comments
-    print("Processing issue comments...")
-    cursor = conn.execute("""
-        SELECT id, pr_number, body
-        FROM issue_comments
-        WHERE body IS NOT NULL AND body != ''
-    """)
-    for row in cursor:
-        key = (row["id"], "issue_comment")
-        if key not in categories:
-            stats["uncategorized_issue_comments"] += 1
-            continue
-        pr = pr_info.get(row["pr_number"], {"number": row["pr_number"], "title": "Unknown"})
-        example = format_pr_discussion(dict(row), categories[key], pr)
-        examples.append(example)
-        stats["issue_comments"] += 1
-
-    # Process review verdicts (with body text)
-    print("Processing review verdicts...")
-    cursor = conn.execute("""
-        SELECT id, pr_number, state, body
-        FROM reviews
-        WHERE body IS NOT NULL AND body != ''
-    """)
-    for row in cursor:
-        key = (row["id"], "review")
-        if key not in categories:
-            stats["uncategorized_reviews"] += 1
-            continue
-        pr = pr_info.get(row["pr_number"], {"number": row["pr_number"], "title": "Unknown"})
-        example = format_review_verdict(dict(row), categories[key], pr)
-        examples.append(example)
-        stats["reviews"] += 1
-
+    print("Loading and filtering comments...")
+    comments = load_substantive_comments(conn, categories)
     conn.close()
 
-    print(f"\nProcessing stats:")
-    for k, v in sorted(stats.items()):
-        print(f"  {k}: {v}")
-    print(f"  Total examples: {len(examples)}")
+    if not comments:
+        print("No substantive comments found. Exiting.")
+        return
 
-    # Shuffle and split into train/eval
-    random.seed(RANDOM_SEED)
-    random.shuffle(examples)
+    # Domain distribution
+    print(f"\nDomain distribution (before oversampling, n={len(comments)}):")
+    domain_counts = Counter(c["category"]["domain"] for c in comments)
+    for domain, count in domain_counts.most_common():
+        pct = 100.0 * count / len(comments)
+        print(f"  {domain:20s} {count:5d} ({pct:5.1f}%)")
 
-    eval_count = int(len(examples) * EVAL_FRACTION)
-    eval_examples = examples[:eval_count]
-    train_examples = examples[eval_count:]
+    # Severity distribution
+    print("\nSeverity distribution:")
+    severity_counts = Counter(c["category"]["severity"] for c in comments)
+    for sev, count in severity_counts.most_common():
+        pct = 100.0 * count / len(comments)
+        print(f"  {sev:20s} {count:5d} ({pct:5.1f}%)")
 
-    print(f"\nSplit: {len(train_examples)} train, {len(eval_examples)} eval")
+    # Feedback type distribution
+    print("\nFeedback type distribution:")
+    ft_counts = Counter(c["category"]["feedback_type"] for c in comments)
+    for ft, count in ft_counts.most_common():
+        pct = 100.0 * count / len(comments)
+        print(f"  {ft:20s} {count:5d} ({pct:5.1f}%)")
 
-    # Ensure output directories exist
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    EVAL_DIR.mkdir(parents=True, exist_ok=True)
+    # PR-based train/eval split
+    print(f"\nSplitting by PR (eval ratio: {EVAL_SPLIT_RATIO:.0%}, seed: {RANDOM_SEED})...")
+    train_comments, eval_comments, eval_prs = split_by_pr(
+        comments, EVAL_SPLIT_RATIO, RANDOM_SEED
+    )
+    n_prs_total = len(set(c["pr_number"] for c in comments))
+    print(f"  Total PRs:   {n_prs_total}")
+    print(f"  Eval PRs:    {len(eval_prs)}")
+    print(f"  Train PRs:   {n_prs_total - len(eval_prs)}")
+    print(f"  Train comments (before oversampling): {len(train_comments)}")
+    print(f"  Eval comments:                        {len(eval_comments)}")
 
-    # Write training set
+    # Apply oversampling to train set only
+    rng = random.Random(RANDOM_SEED)
+    print("\nApplying quality-based oversampling to train set...")
+    train_oversampled, weight_dist = apply_oversampling(train_comments, rng)
+    print(f"  Before oversampling: {len(train_comments)}")
+    print(f"  After oversampling:  {len(train_oversampled)}")
+    print(f"  Added copies:        {len(train_oversampled) - len(train_comments)}")
+    print("\n  Weight distribution (unique examples):")
+    for weight_str in sorted(weight_dist.keys(), key=float):
+        count = weight_dist[weight_str]
+        print(f"    weight={weight_str}: {count} examples")
+
+    # Shuffle train set
+    rng.shuffle(train_oversampled)
+
+    # Format examples
+    print("\nFormatting examples...")
+    train_records = [
+        format_example(c, pr_info.get(c["pr_number"])) for c in train_oversampled
+    ]
+    eval_records = [
+        format_example(c, pr_info.get(c["pr_number"])) for c in eval_comments
+    ]
+
+    # Write outputs
     train_path = OUTPUT_DIR / "reviews_sft.jsonl"
-    with open(train_path, "w") as f:
-        for ex in train_examples:
-            f.write(json.dumps(ex) + "\n")
-    print(f"Wrote {len(train_examples)} examples to {train_path}")
-
-    # Write held-out evaluation set
     eval_path = EVAL_DIR / "held_out_reviews.jsonl"
-    with open(eval_path, "w") as f:
-        for ex in eval_examples:
-            f.write(json.dumps(ex) + "\n")
-    print(f"Wrote {len(eval_examples)} examples to {eval_path}")
+    summary_path = OUTPUT_DIR / "reviews_sft_summary.json"
 
-    # Write summary stats
+    print(f"\nWriting train set: {train_path}")
+    write_jsonl(train_records, train_path)
+
+    print(f"Writing eval set:  {eval_path}")
+    write_jsonl(eval_records, eval_path)
+
+    # Build summary
     summary = {
-        "exported_at": datetime.now().isoformat(),
-        "total_examples": len(examples),
-        "train_examples": len(train_examples),
-        "eval_examples": len(eval_examples),
-        "eval_fraction": EVAL_FRACTION,
-        "random_seed": RANDOM_SEED,
-        "stats": dict(stats),
-        "sources": {
-            "review_comments": stats["review_comments"],
-            "issue_comments": stats["issue_comments"],
-            "reviews": stats["reviews"],
+        "source_db": str(DB_PATH),
+        "filters": {
+            "comment_type": "review_comment",
+            "feedback_types": ["suggestion", "requirement", "question"],
+            "requires_diff_hunk": True,
+            "top_level_only": True,
+            "excluded_themes": ["FAILED_CATEGORIZATION"],
         },
+        "quality_weights": {
+            "has_code_suggestion": WEIGHT_CODE_SUGGESTION,
+            "is_pattern": WEIGHT_PATTERN,
+            "is_style_example": WEIGHT_STYLE_EXAMPLE,
+            "method": "multiplicative oversampling",
+        },
+        "split": {
+            "method": "pr_based",
+            "eval_ratio": EVAL_SPLIT_RATIO,
+            "seed": RANDOM_SEED,
+            "total_prs": n_prs_total,
+            "eval_prs": len(eval_prs),
+            "train_prs": n_prs_total - len(eval_prs),
+        },
+        "counts": {
+            "substantive_comments": len(comments),
+            "train_before_oversampling": len(train_comments),
+            "train_after_oversampling": len(train_oversampled),
+            "oversampled_copies": len(train_oversampled) - len(train_comments),
+            "eval": len(eval_comments),
+        },
+        "domain_distribution": dict(domain_counts.most_common()),
+        "severity_distribution": dict(severity_counts.most_common()),
+        "feedback_type_distribution": dict(ft_counts.most_common()),
+        "weight_distribution": dict(
+            sorted(weight_dist.items(), key=lambda x: float(x[0]))
+        ),
     }
 
-    summary_path = OUTPUT_DIR / "reviews_sft_summary.json"
+    print(f"Writing summary:   {summary_path}")
     with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=2)
-    print(f"Wrote summary to {summary_path}")
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    print("\nDone.")
+    print(f"  Train: {len(train_records)} examples ({train_path})")
+    print(f"  Eval:  {len(eval_records)} examples ({eval_path})")
 
 
 if __name__ == "__main__":

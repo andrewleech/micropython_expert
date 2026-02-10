@@ -1,18 +1,71 @@
 {
-  "exported_at": "2026-02-03T21:39:58.869763",
-  "total_examples": 18614,
-  "train_examples": 16753,
-  "eval_examples": 1861,
-  "eval_fraction": 0.1,
-  "random_seed": 42,
-  "stats": {
-    "review_comments": 6842,
-    "issue_comments": 11379,
-    "reviews": 393
+  "source_db": "/home/anl/mpy/micropython-expert/data/raw/dpgeorge_reviews.db",
+  "filters": {
+    "comment_type": "review_comment",
+    "feedback_types": [
+      "suggestion",
+      "requirement",
+      "question"
+    ],
+    "requires_diff_hunk": true,
+    "top_level_only": true,
+    "excluded_themes": [
+      "FAILED_CATEGORIZATION"
+    ]
   },
-  "sources": {
-    "review_comments": 6842,
-    "issue_comments": 11379,
-    "reviews": 393
+  "quality_weights": {
+    "has_code_suggestion": 1.5,
+    "is_pattern": 1.2,
+    "is_style_example": 1.3,
+    "method": "multiplicative oversampling"
+  },
+  "split": {
+    "method": "pr_based",
+    "eval_ratio": 0.1,
+    "seed": 42,
+    "total_prs": 1339,
+    "eval_prs": 133,
+    "train_prs": 1206
+  },
+  "counts": {
+    "substantive_comments": 4537,
+    "train_before_oversampling": 3986,
+    "train_after_oversampling": 7532,
+    "oversampled_copies": 3546,
+    "eval": 551
+  },
+  "domain_distribution": {
+    "code_style": 1486,
+    "correctness": 725,
+    "documentation": 638,
+    "api_design": 548,
+    "build_system": 271,
+    "architecture": 199,
+    "testing": 194,
+    "portability": 160,
+    "performance": 126,
+    "memory": 121,
+    "error_handling": 60,
+    "security": 9
+  },
+  "severity_distribution": {
+    "suggestion": 2812,
+    "nitpick": 940,
+    "blocking": 785
+  },
+  "feedback_type_distribution": {
+    "suggestion": 2069,
+    "requirement": 1380,
+    "question": 1088
+  },
+  "weight_distribution": {
+    "1.00": 51,
+    "1.20": 55,
+    "1.30": 289,
+    "1.50": 40,
+    "1.56": 1585,
+    "1.80": 35,
+    "1.95": 140,
+    "2.34": 1791
   }
 }
