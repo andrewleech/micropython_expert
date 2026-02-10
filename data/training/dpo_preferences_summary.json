@@ -1,9 +1,10 @@
 {
-  "total_pairs": 4698,
+  "total_pairs": 4974,
   "pair_counts": {
-    "specificity": 1500,
     "role_confusion": 2000,
-    "severity": 1198
+    "severity": 1198,
+    "specificity": 1500,
+    "conciseness": 276
   },
   "output_file": "/home/anl/mpy/micropython-expert/data/training/dpo_preferences.jsonl"
 }

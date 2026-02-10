@@ -107,7 +107,7 @@ This document captures insights, challenges, and recommendations from the fine-t
 
 ### Training Data v2: Quality Over Quantity
 
-**Decision:** Reduce SFT from 23,679 to ~15,460 examples by removing low-quality data
+**Decision:** Reduce SFT from 23,679 to 16,710 examples by removing low-quality data and adding targeted synthetic data
 
 **Rationale:**
 - v1 benchmark showed the model learned to produce noise, not reviews

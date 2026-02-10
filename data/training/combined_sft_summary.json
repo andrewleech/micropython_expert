@@ -1,6 +1,6 @@
 {
-  "combined_at": "2026-02-10T19:16:36.408171",
-  "total_examples": 15460,
+  "combined_at": "2026-02-10T21:28:37.369695",
+  "total_examples": 16710,
   "random_seed": 42,
   "datasets": {
     "reviews_sft.jsonl": {
@@ -12,6 +12,11 @@
       "original": 501,
       "weight": 2.0,
       "after_weighting": 1002
+    },
+    "synthetic_reviews.jsonl": {
+      "original": 500,
+      "weight": 2.5,
+      "after_weighting": 1250
     },
     "wiki_qa.jsonl": {
       "original": 403,

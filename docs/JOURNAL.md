@@ -491,14 +491,15 @@ Initial validation run exposed 4 issues that required fixes:
 | DPO pair types | 2 (severity, style) | 4 (role confusion, specificity, conciseness, severity) |
 | DPO prompt format | Hardcoded tokens | Messages-based (model-agnostic) |
 | Validation checks | None | 8 automated checks |
-| Combined SFT total | 23,679 | 15,460 (synthetic pending) |
+| Combined SFT total | 23,679 | 16,710 |
 
 ### Notes
 - `claude -p` (Claude Code CLI) uses existing Claude Code authentication — no separate API key needed
-- Synthetic data generation scripts (generate_synthetic_reviews.py, DPO conciseness pairs) not yet executed
-- After synthetic generation and re-combination, expected total ~17,000 SFT examples + ~5,200 DPO pairs
+- Synthetic reviews: 500/500 generated, 0 failures, ~80 min runtime (Claude Haiku)
+- DPO conciseness: 276/276 generated, 0 failures, ~28 min runtime (Claude Haiku)
+- Final totals: 16,710 SFT examples + 4,974 DPO pairs, 8/8 validation checks passing
 
 ### Status
-**Phase: Training data v2 COMPLETE — pending synthetic generation and retraining**
+**Phase: Training data v2 COMPLETE — ready for retraining**
 
 ---

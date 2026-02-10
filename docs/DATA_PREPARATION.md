@@ -8,12 +8,12 @@ This document describes the v2 training data pipeline for the MicroPython Expert
 |---------|--------|----------|--------|
 | reviews_sft.jsonl | Filtered substantive review_comments | 7,532 (from 4,537 before oversampling) | Complete |
 | pr_reviews.jsonl | Aggregated multi-comment PR reviews | 501 | Complete |
-| synthetic_reviews.jsonl | Claude-generated (diff->review) pairs | ~500 target | Pending |
+| synthetic_reviews.jsonl | Claude-generated (diff->review) pairs | 500 | Complete |
 | wiki_qa.jsonl | GitHub wiki pages | 403 | Complete (unchanged) |
 | codebase_qa.jsonl | MicroPython source code | 3,936 | Complete (unchanged) |
 | app_dev_qa.jsonl | Practical usage topics | 539 | Complete (unchanged) |
-| dpo_preferences.jsonl | Targeted failure mode pairs | 4,698 | Complete (excl. conciseness) |
-| combined_sft.jsonl | Weighted combination | 15,460 | Complete (synthetic pending) |
+| dpo_preferences.jsonl | Targeted failure mode pairs | 4,974 | Complete |
+| combined_sft.jsonl | Weighted combination | 16,710 | Complete |
 
 ## Combined Dataset Summary
 
@@ -21,7 +21,7 @@ This document describes the v2 training data pipeline for the MicroPython Expert
 |---------|----------|--------|-----------------|
 | reviews_sft | 7,532 | 1.0 | 7,532 |
 | pr_reviews | 501 | 2.0 | 1,002 |
-| synthetic_reviews | ~500 | 2.5 | ~1,250 (pending) |
+| synthetic_reviews | 500 | 2.5 | 1,250 |
 | wiki_qa | 403 | 1.2 | 483 |
 | codebase_qa | 3,936 | 1.5 | 5,904 |
 | app_dev_qa | 539 | 1.0 | 539 |
@@ -90,16 +90,17 @@ Single system prompt focused on inline code review. Metadata includes 13-field c
 
 ## 3. Synthetic Reviews (synthetic_reviews.jsonl)
 
-**Status:** Pending.
-
 **Generation:** `python scripts/generate_synthetic_reviews.py`
+
+**Contents:** 500 synthetic review examples generated from real PR diffs.
 
 **Method:**
 - Uses `claude -p --model claude-haiku-4-5-20251001` (Claude Code CLI, no separate API key needed)
-- Selects ~500 PRs by diff complexity
+- Selects 500 PRs by diff complexity
 - Builds prompts with dpgeorge style guide + 3 few-shot examples from the review database
 - Checkpoint/resume via `.synthetic_checkpoint.json`
-- Runtime: ~30 minutes
+- Runtime: ~80 minutes (two runs, first interrupted at 140, resumed to completion)
+- Zero failures across all 500 PRs
 
 ## 4. Wiki Q&A Dataset (wiki_qa.jsonl)
 
@@ -213,7 +214,7 @@ Single system prompt focused on inline code review. Metadata includes 13-field c
 
 **Generation:** `python scripts/export_dpo_dataset.py`
 
-**Total: 4,698 pairs** (without conciseness pairs).
+**Total: 4,974 pairs** (including 276 conciseness pairs).
 
 Four pair types targeting identified model failure modes:
 
@@ -222,7 +223,7 @@ Four pair types targeting identified model failure modes:
 | Role confusion | ~2,000 | Substantive review_comment (chosen) vs merge/praise issue_comment (rejected) |
 | Specificity | ~1,500 | Comments with code suggestions (chosen) vs without (rejected), matched by domain/component |
 | Severity | ~1,198 | Higher severity preferred (blocking > suggestion > nitpick) |
-| Conciseness | synthetic, optional | Terse Claude rewrite (chosen) vs verbose original (rejected). Requires `claude -p`. Use `--skip-conciseness` to skip |
+| Conciseness | 276 | Terse Claude rewrite (chosen) vs verbose original (rejected). Generated via `claude -p`. Use `--skip-conciseness` to skip regeneration |
 
 **Format:**
 ```json

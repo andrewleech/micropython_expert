@@ -1,0 +1,10 @@
+{
+  "generated_at": "2026-02-10T21:28:29.041311",
+  "total_target_prs": 500,
+  "generated": 500,
+  "skipped": 0,
+  "failed": 0,
+  "model": "claude-haiku-4-5-20251001",
+  "elapsed_seconds": 3190.7,
+  "output_path": "/home/anl/mpy/micropython-expert/data/training/synthetic_reviews.jsonl"
+}

@@ -12,15 +12,15 @@ This document tracks training runs, hyperparameters, and metrics.
 
 | Dataset | Examples | Purpose |
 |---------|----------|---------|
-| combined_sft.jsonl | 15,460 (v2, synthetic pending) | SFT training |
-| dpo_preferences.jsonl | 4,698 (v2, conciseness pending) | DPO alignment |
+| combined_sft.jsonl | 16,710 (v2) | SFT training |
+| dpo_preferences.jsonl | 4,974 (v2) | DPO alignment |
 | held_out_reviews.jsonl | 551 (v2, PR-based split) | Evaluation |
 
 ### Planned Configuration
 
 **SFT Training:**
 - Model: Qwen/Qwen2.5-Coder-7B-Instruct
-- Dataset: combined_sft.jsonl (~15,460 examples)
+- Dataset: combined_sft.jsonl (16,710 examples)
 - Epochs: 3
 - Batch size: 4 (gradient accumulation: 8, effective: 32)
 - Learning rate: 2e-5
@@ -31,7 +31,7 @@ This document tracks training runs, hyperparameters, and metrics.
 
 **DPO Training:**
 - Starting checkpoint: SFT output
-- Dataset: dpo_preferences.jsonl (~4,698 pairs)
+- Dataset: dpo_preferences.jsonl (4,974 pairs)
 - Epochs: 1
 - Batch size: 2 (gradient accumulation: 8, effective: 16)
 - Learning rate: 5e-7
